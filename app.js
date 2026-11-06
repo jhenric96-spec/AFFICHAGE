@@ -1,13 +1,12 @@
 /* AFFICHAGE : contrôle des poses d'affiches sur le terrain.
-   Pour chaque emplacement : une photo, le nombre d'affiches collées (compté par l'IA, validé par l'afficheur),
+   Pour chaque emplacement : une photo, le nombre d'affiches collées (saisi par l'afficheur),
    la position GPS et le nom de l'afficheur. Fonctionne sans réseau : les poses sont gardées sur le téléphone
    (IndexedDB) et envoyées à la Google Sheet (serveur/Code.gs) dès que le réseau revient. Aucune dépendance. */
 'use strict';
 
-const VERSION_APP = '1.0.0';
+const VERSION_APP = '1.1.0';
 const VERSION_SERVEUR_MIN = 1.0;
 const ADRESSE_PUBLIQUE = 'https://jhenric96-spec.github.io/AFFICHAGE/';
-const DELAI_COMPTAGE_MS = 75000;      // au-delà, l'afficheur compte lui-même (le serveur recompte à l'envoi)
 const ENVOI_AUTO_MS = 2 * 60 * 1000;
 const GPS_PRECISION_VISEE_M = 15;
 const GPS_PRECISION_MAX_M = 50;
@@ -197,7 +196,7 @@ async function actualiserAfficheurs() {
 /* Saisie d'une pose                                                   */
 /* ------------------------------------------------------------------ */
 
-let E = null;   // pose en cours : { pose, ia, comptage, gps, nombreTouche }
+let E = null;   // pose en cours : { pose, gps }
 
 function nouvellePose() {
   const r = Reglages.lire();
@@ -209,7 +208,7 @@ function nouvellePose() {
 async function afficherPose(pose) {
   // Une pose reprise plus tard ne garde pas son ancienne position : elle est recapturée sur place
   pose.gps = null;
-  E = { pose, ia: pose.ia || null, comptage: pose.ia ? 'fait' : (pose.photo ? 'manuel' : null), gps: null, nombreTouche: pose.nombre != null };
+  E = { pose, gps: null };
   vider('pose');
   const entree = h('input', { type: 'file', accept: 'image/*', capture: 'environment', class: 'cache', id: 'entree-photo', onchange: surPhoto });
   racineApp.append(
@@ -230,7 +229,6 @@ async function afficherPose(pose) {
     h('div', { class: 'barre-bas' }, h('button', { class: 'btn primaire grand', id: 'valider', onclick: validerPose }, 'Valider la pose')));
   majPhoto(); majNombre(); majGps(); majValider();
   capturerGps();
-  if (pose.photo && !pose.ia) compterAffiches();   // pose reprise : nouvel essai de comptage
 }
 
 async function quitterPose() {
@@ -241,7 +239,6 @@ async function quitterPose() {
 
 async function sauverBrouillon() {
   if (!E || !E.pose.photo) return;
-  E.pose.ia = E.ia;
   await DB.mettre(Object.assign({}, E.pose, { gps: null }));
 }
 
@@ -266,10 +263,8 @@ async function surPhoto(ev) {
   try {
     const [photo, miniature] = await Promise.all([compresserImage(fichier, 1280, 0.78), compresserImage(fichier, 240, 0.7)]);
     Object.assign(E.pose, { photo, miniature, photoPriseLe: fichier.lastModified || Date.now(), empreinte: await empreinte(photo), nombre: null });
-    E.ia = null; E.nombreTouche = false; E.comptage = null;
     majPhoto(); majNombre(); majValider();
     await sauverBrouillon();
-    compterAffiches();
   } catch (e) { toast('Photo illisible : reprenez-la'); }
 }
 
@@ -298,49 +293,21 @@ async function empreinte(texte) {
   } catch (e) { return ''; }
 }
 
-/* ---------- 2. Nombre d'affiches (comptage automatique + validation) ---------- */
-
-async function compterAffiches() {
-  const r = Reglages.lire();
-  const p = E.pose, id = p.id, photo = p.photo;
-  if (!r.url || !navigator.onLine) { E.comptage = 'manuel'; E.raison = r.url ? 'pas de réseau' : 'téléphone non connecté'; majNombre(); return; }
-  E.comptage = 'en_cours'; majNombre();
-  let rep;
-  try { rep = await appelServeur(r.url, { action: 'compter', jeton: r.jeton, id, photo, afficheur: p.afficheur, appareil: idAppareil() }, DELAI_COMPTAGE_MS); }
-  catch (e) { rep = { ok: false, raison: e.name === 'AbortError' ? 'réseau trop lent' : 'pas de réseau' }; }
-  if (!E || E.pose.id !== id || E.pose.photo !== photo) return;   // photo reprise entre-temps
-  if (rep.ok) {
-    E.ia = rep; E.comptage = 'fait';
-    if (!E.nombreTouche && rep.nombre > 0) E.pose.nombre = rep.nombre;
-  } else { E.comptage = 'manuel'; E.raison = rep.raison || rep.erreur || 'comptage indisponible'; }
-  majNombre(); majValider(); sauverBrouillon();
-}
+/* ---------- 2. Nombre d'affiches (saisi par l'afficheur) ---------- */
 
 function majNombre() {
   const b = document.getElementById('bloc-nombre');
   if (!b) return;
-  const p = E.pose, ia = E.ia;
+  const p = E.pose;
   const enfants = [h('h3', {}, '2. Nombre d\'affiches collées')];
-  if (!p.photo) { enfants.push(h('p', { class: 'discret' }, 'Prenez d\'abord la photo : l\'application compte les affiches.')); b.replaceChildren(...enfants); return; }
-  if (E.comptage === 'en_cours') enfants.push(h('p', { class: 'attente' }, h('span', { class: 'roue' }), 'Comptage automatique en cours…'));
-  else if (E.comptage === 'fait' && ia) {
-    if (!ia.reconnue) enfants.push(h('p', { class: 'avert' }, '⚠ L\'affiche n\'est pas reconnue sur la photo. Cadrez les affiches de face et de plus près, puis reprenez la photo.'));
-    else enfants.push(h('p', { class: 'resultat' }, `L'application a compté `, h('strong', {}, pluriel(ia.nombre, 'affiche')), '. Vérifiez et corrigez si besoin.'));
-    const defauts = (ia.defauts || []).filter(Boolean);
-    if (ia.reconnue && (ia.qualite === 'mauvaise' || ia.qualite === 'moyenne' || defauts.length)) {
-      enfants.push(h('div', { class: 'qualite' }, h('strong', {}, ia.qualite === 'mauvaise' ? '⚠ Pose à reprendre' : '⚠ Pose à améliorer'),
-        defauts.length ? h('ul', {}, defauts.map(d => h('li', {}, d))) : null,
-        ia.commentaire ? h('small', {}, ia.commentaire) : null,
-        h('small', {}, 'Si possible, corrigez l\'affiche puis reprenez la photo.')));
-    } else if (ia.reconnue && ia.qualite === 'bonne') enfants.push(h('p', { class: 'ok' }, '✓ Pose de bonne qualité'));
-  } else enfants.push(h('p', { class: 'discret' }, `Comptage automatique indisponible (${E.raison || 'pas de réseau'}) : comptez les affiches visibles sur la photo.`));
+  if (!p.photo) { enfants.push(h('p', { class: 'discret' }, 'Prenez d\'abord la photo.')); b.replaceChildren(...enfants); return; }
+  enfants.push(h('p', { class: 'discret' }, 'Comptez les affiches collées visibles sur la photo, puis indiquez leur nombre avec − et +.'));
   const n = Number(p.nombre) || 0;
-  const changer = d => { E.pose.nombre = Math.max(0, Math.min(99, (Number(E.pose.nombre) || 0) + d)); E.nombreTouche = true; majNombre(); majValider(); sauverBrouillon(); };
+  const changer = d => { E.pose.nombre = Math.max(0, Math.min(99, (Number(E.pose.nombre) || 0) + d)); majNombre(); majValider(); sauverBrouillon(); };
   enfants.push(h('div', { class: 'compteur' },
     h('button', { class: 'btn rond', 'aria-label': 'Une affiche de moins', onclick: () => changer(-1), disabled: n <= 0 }, '−'),
     h('output', { id: 'nombre', 'aria-live': 'polite' }, p.nombre == null ? '?' : String(n)),
     h('button', { class: 'btn rond', 'aria-label': 'Une affiche de plus', onclick: () => changer(1) }, '+')));
-  if (ia && E.comptage === 'fait' && p.nombre != null && n !== ia.nombre) enfants.push(h('small', { class: 'discret centre' }, `Vous avez corrigé : l'application en voyait ${ia.nombre}.`));
   b.replaceChildren(...enfants);
 }
 
@@ -403,7 +370,7 @@ function majGps() {
 function manque() {
   const p = E.pose;
   if (!p.photo) return 'Prenez la photo';
-  if (!(Number(p.nombre) >= 1)) return E.comptage === 'en_cours' ? 'Comptage en cours…' : 'Indiquez le nombre d\'affiches';
+  if (!(Number(p.nombre) >= 1)) return 'Indiquez le nombre d\'affiches';
   if (!p.gps) return E.gps && E.gps.recherche ? 'Recherche de la position…' : 'Position manquante';
   if (!p.afficheur) return 'Choisissez l\'afficheur';
   return '';
@@ -422,8 +389,8 @@ async function validerPose() {
   const p = E.pose;
   if (p.gps.acc > GPS_PRECISION_MAX_M && !confirm(`La position est peu précise (±${Math.round(p.gps.acc)} m). Valider quand même ?`)) return;
   arreterGps();
-  const pose = Object.assign({}, p, { statut: 'a_envoyer', enregistreeLe: Date.now(), ia: E.ia, commentaire: (p.commentaire || '').trim(),
-    nombreIA: E.ia ? E.ia.nombre : null, version: VERSION_APP });
+  const pose = Object.assign({}, p, { statut: 'a_envoyer', enregistreeLe: Date.now(), commentaire: (p.commentaire || '').trim(),
+    version: VERSION_APP });
   await DB.mettre(pose);
   Reglages.maj(x => { x.afficheur = pose.afficheur; });
   toast(`Pose enregistrée ✓ ${pluriel(Number(pose.nombre), 'affiche')}`);
@@ -463,7 +430,7 @@ async function synchroniser({ silencieux = true } = {}) {
     for (const p of aEnvoyer) {
       try {
         const rep = await appelServeur(r.url, { action: 'pose', jeton: r.jeton, appareil: idAppareil(), version: VERSION_APP, pose: {
-          id: p.id, afficheur: p.afficheur, nombre: p.nombre, nombreIA: p.nombreIA, photo: p.photo, photoPriseLe: p.photoPriseLe,
+          id: p.id, afficheur: p.afficheur, nombre: p.nombre, photo: p.photo, photoPriseLe: p.photoPriseLe,
           enregistreeLe: p.enregistreeLe, empreinte: p.empreinte, gps: p.gps, commentaire: p.commentaire } }, 150000);
         if (!rep.ok) { echec = rep.erreur || 'refusée par le serveur'; continue; }
         // Envoyée : la photo complète est retirée du téléphone (la miniature reste pour la liste)
@@ -579,7 +546,7 @@ async function testerServeur(diag) {
     if (!(Number(rep.version) >= VERSION_SERVEUR_MIN)) throw new Error(`serveur trop ancien (${rep.version || '?'}) : redéployez serveur/Code.gs`);
     Reglages.maj(x => { x.afficheurs = rep.afficheurs || []; x.afficheursMaj = Date.now(); });
     diag.className = 'diagnostic ok';
-    diag.textContent = `✓ Connexion réussie (serveur ${rep.version}). ${pluriel((rep.afficheurs || []).length, 'afficheur')}. Comptage par l'IA : ${rep.ia ? 'activé' : 'NON configuré (menu AFFICHAGE de la Google Sheet)'}.`;
+    diag.textContent = `✓ Connexion réussie (serveur ${rep.version}). ${pluriel((rep.afficheurs || []).length, 'afficheur')}.`;
   } catch (e) { diag.className = 'diagnostic avert'; diag.textContent = '✗ ' + (e.name === 'AbortError' ? 'pas de réponse (réseau ?)' : e.message); }
 }
 
