@@ -4,7 +4,7 @@
    (IndexedDB) et envoyées à la Google Sheet (serveur/Code.gs) dès que le réseau revient. Aucune dépendance. */
 'use strict';
 
-const VERSION_APP = '1.1.0';
+const VERSION_APP = '1.2.0';
 const VERSION_SERVEUR_MIN = 1.0;
 const ADRESSE_PUBLIQUE = 'https://jhenric96-spec.github.io/AFFICHAGE/';
 const ENVOI_AUTO_MS = 2 * 60 * 1000;
@@ -301,13 +301,15 @@ function majNombre() {
   const p = E.pose;
   const enfants = [h('h3', {}, '2. Nombre d\'affiches collées')];
   if (!p.photo) { enfants.push(h('p', { class: 'discret' }, 'Prenez d\'abord la photo.')); b.replaceChildren(...enfants); return; }
-  enfants.push(h('p', { class: 'discret' }, 'Comptez les affiches collées visibles sur la photo, puis indiquez leur nombre avec − et +.'));
-  const n = Number(p.nombre) || 0;
-  const changer = d => { E.pose.nombre = Math.max(0, Math.min(99, (Number(E.pose.nombre) || 0) + d)); majNombre(); majValider(); sauverBrouillon(); };
-  enfants.push(h('div', { class: 'compteur' },
-    h('button', { class: 'btn rond', 'aria-label': 'Une affiche de moins', onclick: () => changer(-1), disabled: n <= 0 }, '−'),
-    h('output', { id: 'nombre', 'aria-live': 'polite' }, p.nombre == null ? '?' : String(n)),
-    h('button', { class: 'btn rond', 'aria-label': 'Une affiche de plus', onclick: () => changer(1) }, '+')));
+  // Champ numérique : clavier chiffres sur téléphone ; pas de nouvel affichage à chaque frappe (le clavier reste ouvert)
+  const champ = h('input', { id: 'nombre', class: 'champ-nombre', type: 'number', inputmode: 'numeric', pattern: '[0-9]*', min: '1', max: '99', step: '1',
+    placeholder: 'Ex. : 3', 'aria-label': 'Nombre d\'affiches collées', value: p.nombre == null ? '' : String(p.nombre),
+    oninput: ev => {
+      const v = String(ev.target.value).replace(/[^0-9]/g, '').slice(0, 2);
+      E.pose.nombre = v === '' ? null : Number(v);
+      majValider(); sauverBrouillon();
+    } });
+  enfants.push(h('label', { class: 'champ' }, h('span', { class: 'discret' }, 'Nombre d\'affiches collées visibles sur la photo'), champ));
   b.replaceChildren(...enfants);
 }
 
