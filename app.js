@@ -1,11 +1,11 @@
 /* AFFICHAGE : contrôle des poses d'affiches sur le terrain.
-   Pour chaque emplacement : une photo, le nombre d'affiches collées (saisi par l'afficheur),
+   Pour chaque affiche : une photo, le code de l'affiche (saisi par l'afficheur),
    la position GPS et le nom de l'afficheur. Fonctionne sans réseau : les poses sont gardées sur le téléphone
    (IndexedDB) et envoyées à la Google Sheet (serveur/Code.gs) dès que le réseau revient. Aucune dépendance. */
 'use strict';
 
-const VERSION_APP = '1.2.0';
-const VERSION_SERVEUR_MIN = 1.0;
+const VERSION_APP = '1.3.0';
+const VERSION_SERVEUR_MIN = 1.2;   // le serveur doit connaître le code affiche
 const ADRESSE_PUBLIQUE = 'https://jhenric96-spec.github.io/AFFICHAGE/';
 const ENVOI_AUTO_MS = 2 * 60 * 1000;
 const GPS_PRECISION_VISEE_M = 15;
@@ -151,7 +151,7 @@ function lignePose(p) {
   return h('li', {},
     p.miniature ? h('img', { src: p.miniature, alt: '' }) : h('div', { class: 'vignette-vide' }, '📷'),
     h('div', { class: 'infos' },
-      h('strong', {}, pluriel(Number(p.nombre) || 0, 'affiche')),
+      h('strong', {}, p.code || pluriel(Number(p.nombre) || 0, 'affiche')),
       h('small', {}, `${jourDe(p.enregistreeLe) === jourDe(Date.now()) ? 'Aujourd\'hui' : new Date(p.enregistreeLe).toLocaleDateString('fr-FR')} à ${heureDe(p.enregistreeLe)}${p.afficheur ? ' · ' + p.afficheur : ''}`),
       lieu ? h('small', { class: 'discret' }, lieu) : null),
     h('span', { class: 'statut ' + p.statut, title: p.statut === 'envoyee' ? 'Envoyée' : 'En attente d\'envoi' }, p.statut === 'envoyee' ? '✓' : '⏳'));
@@ -202,7 +202,7 @@ function nouvellePose() {
   const r = Reglages.lire();
   if (!r.afficheur) return choisirAfficheur(() => nouvellePose());
   const maintenant = Date.now();
-  afficherPose({ id: uuid(), cree: maintenant, statut: 'brouillon', afficheur: r.afficheur, nombre: null, gps: null, photo: null });
+  afficherPose({ id: uuid(), cree: maintenant, statut: 'brouillon', afficheur: r.afficheur, nombre: 1, code: '', gps: null, photo: null });
 }
 
 async function afficherPose(pose) {
@@ -218,7 +218,7 @@ async function afficherPose(pose) {
     h('main', { class: 'pose' },
       entree,
       h('section', { class: 'carte', id: 'bloc-photo' }),
-      h('section', { class: 'carte', id: 'bloc-nombre' }),
+      h('section', { class: 'carte', id: 'bloc-code' }),
       h('section', { class: 'carte', id: 'bloc-gps' }),
       h('section', { class: 'carte', id: 'bloc-afficheur' },
         h('h3', {}, '4. Afficheur'),
@@ -227,7 +227,7 @@ async function afficherPose(pose) {
         h('label', { class: 'champ' }, h('span', { class: 'discret' }, 'Remarque (facultatif)'),
           h('textarea', { id: 'commentaire', rows: 2, placeholder: 'Ex. : affiche collée sur le mur d\'une boutique', oninput: ev => { E.pose.commentaire = ev.target.value; } }, pose.commentaire || '')))),
     h('div', { class: 'barre-bas' }, h('button', { class: 'btn primaire grand', id: 'valider', onclick: validerPose }, 'Valider la pose')));
-  majPhoto(); majNombre(); majGps(); majValider();
+  majPhoto(); majCode(); majGps(); majValider();
   capturerGps();
 }
 
@@ -249,10 +249,10 @@ function majPhoto() {
   if (!b) return;
   const p = E.pose;
   b.replaceChildren(...[
-    h('h3', {}, '1. Photo des affiches'),
-    p.photo ? [h('img', { class: 'apercu', src: p.photo, alt: 'Photo des affiches' }),
+    h('h3', {}, '1. Photo de l\'affiche'),
+    p.photo ? [h('img', { class: 'apercu', src: p.photo, alt: 'Photo de l\'affiche' }),
       h('button', { class: 'btn', onclick: () => document.getElementById('entree-photo').click() }, '📷 Reprendre la photo')]
-      : [h('p', { class: 'discret' }, 'Placez-vous en face, assez loin pour que toutes les affiches collées à cet endroit soient sur la photo.'),
+      : [h('p', { class: 'discret' }, 'Placez-vous en face de l\'affiche collée : une seule affiche par photo.'),
         h('button', { class: 'btn primaire grand', onclick: () => document.getElementById('entree-photo').click() }, h('span', { class: 'icone' }, '📷'), 'Prendre la photo')]].flat());
 }
 
@@ -262,8 +262,8 @@ async function surPhoto(ev) {
   if (!fichier) return;
   try {
     const [photo, miniature] = await Promise.all([compresserImage(fichier, 1280, 0.78), compresserImage(fichier, 240, 0.7)]);
-    Object.assign(E.pose, { photo, miniature, photoPriseLe: fichier.lastModified || Date.now(), empreinte: await empreinte(photo), nombre: null });
-    majPhoto(); majNombre(); majValider();
+    Object.assign(E.pose, { photo, miniature, photoPriseLe: fichier.lastModified || Date.now(), empreinte: await empreinte(photo) });
+    majPhoto(); majCode(); majValider();
     await sauverBrouillon();
   } catch (e) { toast('Photo illisible : reprenez-la'); }
 }
@@ -293,23 +293,22 @@ async function empreinte(texte) {
   } catch (e) { return ''; }
 }
 
-/* ---------- 2. Nombre d'affiches (saisi par l'afficheur) ---------- */
+/* ---------- 2. Code de l'affiche (saisi par l'afficheur) ---------- */
 
-function majNombre() {
-  const b = document.getElementById('bloc-nombre');
+function majCode() {
+  const b = document.getElementById('bloc-code');
   if (!b) return;
   const p = E.pose;
-  const enfants = [h('h3', {}, '2. Nombre d\'affiches collées')];
+  const enfants = [h('h3', {}, '2. Code affiche')];
   if (!p.photo) { enfants.push(h('p', { class: 'discret' }, 'Prenez d\'abord la photo.')); b.replaceChildren(...enfants); return; }
-  // Champ numérique : clavier chiffres sur téléphone ; pas de nouvel affichage à chaque frappe (le clavier reste ouvert)
-  const champ = h('input', { id: 'nombre', class: 'champ-nombre', type: 'number', inputmode: 'numeric', pattern: '[0-9]*', min: '1', max: '99', step: '1',
-    placeholder: 'Ex. : 3', 'aria-label': 'Nombre d\'affiches collées', value: p.nombre == null ? '' : String(p.nombre),
+  // Clavier complet (lettres, chiffres, sigles), sans correction automatique ; pas de nouvel affichage à chaque frappe (le clavier reste ouvert)
+  const champ = h('input', { id: 'code', class: 'champ-code', type: 'text', inputmode: 'text', autocomplete: 'off', autocorrect: 'off', autocapitalize: 'off', spellcheck: 'false',
+    maxlength: '40', placeholder: 'Ex. : A7-X#92', 'aria-label': 'Code affiche', value: p.code || '',
     oninput: ev => {
-      const v = String(ev.target.value).replace(/[^0-9]/g, '').slice(0, 2);
-      E.pose.nombre = v === '' ? null : Number(v);
+      E.pose.code = ev.target.value;
       majValider(); sauverBrouillon();
     } });
-  enfants.push(h('label', { class: 'champ' }, h('span', { class: 'discret' }, 'Nombre d\'affiches collées visibles sur la photo'), champ));
+  enfants.push(h('label', { class: 'champ' }, h('span', { class: 'discret' }, 'Recopiez le code imprimé sur l\'affiche (lettres, chiffres et sigles)'), champ));
   b.replaceChildren(...enfants);
 }
 
@@ -372,7 +371,7 @@ function majGps() {
 function manque() {
   const p = E.pose;
   if (!p.photo) return 'Prenez la photo';
-  if (!(Number(p.nombre) >= 1)) return 'Indiquez le nombre d\'affiches';
+  if (!String(p.code || '').trim()) return 'Saisissez le code de l\'affiche';
   if (!p.gps) return E.gps && E.gps.recherche ? 'Recherche de la position…' : 'Position manquante';
   if (!p.afficheur) return 'Choisissez l\'afficheur';
   return '';
@@ -383,7 +382,7 @@ function majValider() {
   if (!b || !E) return;
   const m = manque();
   b.disabled = !!m;
-  b.textContent = m || `✔ Valider : ${pluriel(Number(E.pose.nombre), 'affiche')}`;
+  b.textContent = m || `✔ Valider : ${String(E.pose.code).trim()}`;
 }
 
 async function validerPose() {
@@ -392,10 +391,10 @@ async function validerPose() {
   if (p.gps.acc > GPS_PRECISION_MAX_M && !confirm(`La position est peu précise (±${Math.round(p.gps.acc)} m). Valider quand même ?`)) return;
   arreterGps();
   const pose = Object.assign({}, p, { statut: 'a_envoyer', enregistreeLe: Date.now(), commentaire: (p.commentaire || '').trim(),
-    version: VERSION_APP });
+    nombre: 1, code: String(p.code).trim(), version: VERSION_APP });
   await DB.mettre(pose);
   Reglages.maj(x => { x.afficheur = pose.afficheur; });
-  toast(`Pose enregistrée ✓ ${pluriel(Number(pose.nombre), 'affiche')}`);
+  toast(`Pose enregistrée ✓ ${pose.code}`);
   await afficherAccueil();
   synchroniser({ silencieux: true });
 }
@@ -432,7 +431,7 @@ async function synchroniser({ silencieux = true } = {}) {
     for (const p of aEnvoyer) {
       try {
         const rep = await appelServeur(r.url, { action: 'pose', jeton: r.jeton, appareil: idAppareil(), version: VERSION_APP, pose: {
-          id: p.id, afficheur: p.afficheur, nombre: p.nombre, photo: p.photo, photoPriseLe: p.photoPriseLe,
+          id: p.id, afficheur: p.afficheur, nombre: p.nombre, code: p.code, photo: p.photo, photoPriseLe: p.photoPriseLe,
           enregistreeLe: p.enregistreeLe, empreinte: p.empreinte, gps: p.gps, commentaire: p.commentaire } }, 150000);
         if (!rep.ok) { echec = rep.erreur || 'refusée par le serveur'; continue; }
         // Envoyée : la photo complète est retirée du téléphone (la miniature reste pour la liste)

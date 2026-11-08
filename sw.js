@@ -1,6 +1,6 @@
 // Mise en cache de l'application pour l'utiliser sans réseau.
 // Changer CACHE à chaque mise à jour des fichiers pour forcer le rafraîchissement sur les téléphones.
-const CACHE = 'affichage-v3';
+const CACHE = 'affichage-v4';
 const FICHIERS = ['./', 'index.html', 'style.css', 'app.js', 'manifest.webmanifest', 'icone-192.png', 'icone-512.png', 'lib/qrcode.js'];
 
 self.addEventListener('install', e => {
