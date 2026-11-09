@@ -4,7 +4,7 @@
    (IndexedDB) et envoyées à la Google Sheet (serveur/Code.gs) dès que le réseau revient. Aucune dépendance. */
 'use strict';
 
-const VERSION_APP = '1.3.0';
+const VERSION_APP = '1.3.1';
 const VERSION_SERVEUR_MIN = 1.2;   // le serveur doit connaître le code affiche
 const ADRESSE_PUBLIQUE = 'https://jhenric96-spec.github.io/AFFICHAGE/';
 const ENVOI_AUTO_MS = 2 * 60 * 1000;
@@ -295,6 +295,10 @@ async function empreinte(texte) {
 
 /* ---------- 2. Code de l'affiche (saisi par l'afficheur) ---------- */
 
+// Boutique : FBT-123, rue : FURB-123 (exactement 3 chiffres après le tiret)
+const FORMAT_CODE = /^(FBT|FURB)-\d{3}$/;
+const normaliserCode = v => String(v || '').toUpperCase().replace(/\s+/g, '');
+
 function majCode() {
   const b = document.getElementById('bloc-code');
   if (!b) return;
@@ -302,13 +306,14 @@ function majCode() {
   const enfants = [h('h3', {}, '2. Code affiche')];
   if (!p.photo) { enfants.push(h('p', { class: 'discret' }, 'Prenez d\'abord la photo.')); b.replaceChildren(...enfants); return; }
   // Clavier complet (lettres, chiffres, sigles), sans correction automatique ; pas de nouvel affichage à chaque frappe (le clavier reste ouvert)
-  const champ = h('input', { id: 'code', class: 'champ-code', type: 'text', inputmode: 'text', autocomplete: 'off', autocorrect: 'off', autocapitalize: 'off', spellcheck: 'false',
-    maxlength: '40', placeholder: 'Ex. : A7-X#92', 'aria-label': 'Code affiche', value: p.code || '',
+  const champ = h('input', { id: 'code', class: 'champ-code', type: 'text', inputmode: 'text', autocomplete: 'off', autocorrect: 'off', autocapitalize: 'characters', spellcheck: 'false',
+    maxlength: '8', placeholder: 'FBT-123 ou FURB-123', 'aria-label': 'Code affiche', value: p.code || '',
     oninput: ev => {
-      E.pose.code = ev.target.value;
+      E.pose.code = normaliserCode(ev.target.value);
+      if (ev.target.value !== E.pose.code) ev.target.value = E.pose.code;
       majValider(); sauverBrouillon();
     } });
-  enfants.push(h('label', { class: 'champ' }, h('span', { class: 'discret' }, 'Recopiez le code imprimé sur l\'affiche (lettres, chiffres et sigles)'), champ));
+  enfants.push(h('label', { class: 'champ' }, h('span', { class: 'discret' }, 'Boutique : FBT- puis 3 chiffres. Rue : FURB- puis 3 chiffres.'), champ));
   b.replaceChildren(...enfants);
 }
 
@@ -371,7 +376,8 @@ function majGps() {
 function manque() {
   const p = E.pose;
   if (!p.photo) return 'Prenez la photo';
-  if (!String(p.code || '').trim()) return 'Saisissez le code de l\'affiche';
+  if (!normaliserCode(p.code)) return 'Saisissez le code de l\'affiche';
+  if (!FORMAT_CODE.test(normaliserCode(p.code))) return 'Code attendu : FBT-123 ou FURB-123';
   if (!p.gps) return E.gps && E.gps.recherche ? 'Recherche de la position…' : 'Position manquante';
   if (!p.afficheur) return 'Choisissez l\'afficheur';
   return '';
@@ -382,7 +388,7 @@ function majValider() {
   if (!b || !E) return;
   const m = manque();
   b.disabled = !!m;
-  b.textContent = m || `✔ Valider : ${String(E.pose.code).trim()}`;
+  b.textContent = m || `✔ Valider : ${normaliserCode(E.pose.code)}`;
 }
 
 async function validerPose() {
@@ -391,7 +397,7 @@ async function validerPose() {
   if (p.gps.acc > GPS_PRECISION_MAX_M && !confirm(`La position est peu précise (±${Math.round(p.gps.acc)} m). Valider quand même ?`)) return;
   arreterGps();
   const pose = Object.assign({}, p, { statut: 'a_envoyer', enregistreeLe: Date.now(), commentaire: (p.commentaire || '').trim(),
-    nombre: 1, code: String(p.code).trim(), version: VERSION_APP });
+    nombre: 1, code: normaliserCode(p.code), version: VERSION_APP });
   await DB.mettre(pose);
   Reglages.maj(x => { x.afficheur = pose.afficheur; });
   toast(`Pose enregistrée ✓ ${pose.code}`);
