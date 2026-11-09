@@ -4,7 +4,7 @@
    (IndexedDB) et envoyées à la Google Sheet (serveur/Code.gs) dès que le réseau revient. Aucune dépendance. */
 'use strict';
 
-const VERSION_APP = '1.3.1';
+const VERSION_APP = '1.3.2';
 const VERSION_SERVEUR_MIN = 1.2;   // le serveur doit connaître le code affiche
 const ADRESSE_PUBLIQUE = 'https://jhenric96-spec.github.io/AFFICHAGE/';
 const ENVOI_AUTO_MS = 2 * 60 * 1000;
@@ -298,6 +298,16 @@ async function empreinte(texte) {
 // Boutique : FBT-123, rue : FURB-123 (exactement 3 chiffres après le tiret)
 const FORMAT_CODE = /^(FBT|FURB)-\d{3}$/;
 const normaliserCode = v => String(v || '').toUpperCase().replace(/\s+/g, '');
+// Préremplissage : FB → FBT-, FU → FURB-, puis uniquement 3 chiffres.
+// Rien n'est complété quand l'agent efface, sinon il ne pourrait plus corriger le début du code.
+function completerCode(saisie, avant) {
+  let v = normaliserCode(saisie);
+  if (v.length <= String(avant || '').length) return v;
+  if (v === 'FB') v = 'FBT-';
+  else if (v === 'FU' || v === 'FUR') v = 'FURB-';
+  const m = v.match(/^(FBT|FURB)-?(.*)$/);
+  return m ? `${m[1]}-${m[2].replace(/\D/g, '').slice(0, 3)}` : v;
+}
 
 function majCode() {
   const b = document.getElementById('bloc-code');
@@ -309,11 +319,14 @@ function majCode() {
   const champ = h('input', { id: 'code', class: 'champ-code', type: 'text', inputmode: 'text', autocomplete: 'off', autocorrect: 'off', autocapitalize: 'characters', spellcheck: 'false',
     maxlength: '8', placeholder: 'FBT-123 ou FURB-123', 'aria-label': 'Code affiche', value: p.code || '',
     oninput: ev => {
-      E.pose.code = normaliserCode(ev.target.value);
-      if (ev.target.value !== E.pose.code) ev.target.value = E.pose.code;
+      E.pose.code = completerCode(ev.target.value, E.pose.code);
+      if (ev.target.value !== E.pose.code) {
+        ev.target.value = E.pose.code;
+        ev.target.setSelectionRange(E.pose.code.length, E.pose.code.length);   // le curseur reste à la fin
+      }
       majValider(); sauverBrouillon();
     } });
-  enfants.push(h('label', { class: 'champ' }, h('span', { class: 'discret' }, 'Boutique : FBT- puis 3 chiffres. Rue : FURB- puis 3 chiffres.'), champ));
+  enfants.push(h('label', { class: 'champ' }, h('span', { class: 'discret' }, 'Boutique : tapez FB. Rue : tapez FU. Le début se complète, ajoutez les 3 chiffres.'), champ));
   b.replaceChildren(...enfants);
 }
 
