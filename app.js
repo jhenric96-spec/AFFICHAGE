@@ -4,7 +4,7 @@
    (IndexedDB) et envoyées à la Google Sheet (serveur/Code.gs) dès que le réseau revient. Aucune dépendance. */
 'use strict';
 
-const VERSION_APP = '1.3.2';
+const VERSION_APP = '1.3.3';
 const VERSION_SERVEUR_MIN = 1.2;   // le serveur doit connaître le code affiche
 const ADRESSE_PUBLIQUE = 'https://jhenric96-spec.github.io/AFFICHAGE/';
 const ENVOI_AUTO_MS = 2 * 60 * 1000;
@@ -298,35 +298,42 @@ async function empreinte(texte) {
 // Boutique : FBT-123, rue : FURB-123 (exactement 3 chiffres après le tiret)
 const FORMAT_CODE = /^(FBT|FURB)-\d{3}$/;
 const normaliserCode = v => String(v || '').toUpperCase().replace(/\s+/g, '');
-// Préremplissage : FB → FBT-, FU → FURB-, puis uniquement 3 chiffres.
-// Rien n'est complété quand l'agent efface, sinon il ne pourrait plus corriger le début du code.
-function completerCode(saisie, avant) {
-  let v = normaliserCode(saisie);
-  if (v.length <= String(avant || '').length) return v;
-  if (v === 'FB') v = 'FBT-';
-  else if (v === 'FU' || v === 'FUR') v = 'FURB-';
-  const m = v.match(/^(FBT|FURB)-?(.*)$/);
-  return m ? `${m[1]}-${m[2].replace(/\D/g, '').slice(0, 3)}` : v;
-}
+const partiesCode = c => {
+  const m = normaliserCode(c).match(/^(FBT|FURB)-(\d{0,3})$/);
+  return m ? { prefixe: m[1], chiffres: m[2] } : { prefixe: '', chiffres: '' };
+};
 
-function majCode() {
+// Le type (bouton) remplit le préfixe, l'agent ne tape que les chiffres. Le texte déjà saisi n'est jamais réécrit
+// sous les doigts d'un clavier complet : les claviers de téléphone gardent leur propre texte et l'écraseraient.
+function majCode(focus) {
   const b = document.getElementById('bloc-code');
   if (!b) return;
   const p = E.pose;
   const enfants = [h('h3', {}, '2. Code affiche')];
   if (!p.photo) { enfants.push(h('p', { class: 'discret' }, 'Prenez d\'abord la photo.')); b.replaceChildren(...enfants); return; }
-  // Clavier complet (lettres, chiffres, sigles), sans correction automatique ; pas de nouvel affichage à chaque frappe (le clavier reste ouvert)
-  const champ = h('input', { id: 'code', class: 'champ-code', type: 'text', inputmode: 'text', autocomplete: 'off', autocorrect: 'off', autocapitalize: 'characters', spellcheck: 'false',
-    maxlength: '8', placeholder: 'FBT-123 ou FURB-123', 'aria-label': 'Code affiche', value: p.code || '',
-    oninput: ev => {
-      E.pose.code = completerCode(ev.target.value, E.pose.code);
-      if (ev.target.value !== E.pose.code) {
-        ev.target.value = E.pose.code;
-        ev.target.setSelectionRange(E.pose.code.length, E.pose.code.length);   // le curseur reste à la fin
-      }
-      majValider(); sauverBrouillon();
-    } });
-  enfants.push(h('label', { class: 'champ' }, h('span', { class: 'discret' }, 'Boutique : tapez FB. Rue : tapez FU. Le début se complète, ajoutez les 3 chiffres.'), champ));
+  const { prefixe, chiffres } = partiesCode(p.code);
+  const choix = (pf, libelle) => h('button', { type: 'button', class: 'btn' + (prefixe === pf ? ' primaire' : ''), 'aria-pressed': prefixe === pf ? 'true' : 'false',
+    onclick: () => {
+      E.pose.code = `${pf}-${partiesCode(E.pose.code).chiffres}`;
+      majCode(true); majValider(); sauverBrouillon();
+    } }, libelle);
+  enfants.push(h('div', { class: 'choix-code' }, choix('FBT', 'Boutique'), choix('FURB', 'Rue')));
+  if (prefixe) {
+    const champ = h('input', { id: 'code', class: 'champ-code', type: 'tel', inputmode: 'numeric', pattern: '[0-9]*', autocomplete: 'off', maxlength: '3',
+      placeholder: '123', 'aria-label': 'Les 3 chiffres du code affiche', value: chiffres,
+      oninput: ev => {
+        const v = ev.target.value.replace(/\D/g, '').slice(0, 3);
+        if (ev.target.value !== v) ev.target.value = v;
+        E.pose.code = `${partiesCode(E.pose.code).prefixe}-${v}`;
+        majValider(); sauverBrouillon();
+      } });
+    enfants.push(h('label', { class: 'champ' }, h('span', { class: 'discret' }, 'Les 3 chiffres du code'),
+      h('div', { class: 'saisie-code' }, h('span', { class: 'prefixe' }, `${prefixe}-`), champ)));
+    b.replaceChildren(...enfants);
+    if (focus) champ.focus();
+    return;
+  }
+  enfants.push(h('p', { class: 'discret' }, 'Choisissez où l\'affiche est collée.'));
   b.replaceChildren(...enfants);
 }
 
@@ -389,8 +396,8 @@ function majGps() {
 function manque() {
   const p = E.pose;
   if (!p.photo) return 'Prenez la photo';
-  if (!normaliserCode(p.code)) return 'Saisissez le code de l\'affiche';
-  if (!FORMAT_CODE.test(normaliserCode(p.code))) return 'Code attendu : FBT-123 ou FURB-123';
+  if (!partiesCode(p.code).prefixe) return 'Choisissez Boutique ou Rue';
+  if (!FORMAT_CODE.test(normaliserCode(p.code))) return 'Saisissez les 3 chiffres du code';
   if (!p.gps) return E.gps && E.gps.recherche ? 'Recherche de la position…' : 'Position manquante';
   if (!p.afficheur) return 'Choisissez l\'afficheur';
   return '';
